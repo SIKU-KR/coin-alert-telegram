@@ -14,6 +14,10 @@
 
 ### 3.  lambda_function.py 실행하기 (test)
 
+먼저, 필요한 라이브러리를 설치합니다
+
+> pip install ccxt pandas datetime python-telegram-bot asyncio
+
 코드파일이 있는 곳에서 터미널(cmd)를 연뒤 다음과 같이 실행할 수 있습니다
 
 > python3 lambda_function.py
