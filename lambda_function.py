@@ -1,49 +1,108 @@
-import ccxt
-import pandas as pd
 from datetime import datetime
+from binance.spot import Spot
+import pandas as pd
 import telegram
 import asyncio
 
+# Binance API 정보
+chatId = None
+token = None
+api_key = None
+api_secret = None
+client = None
+
+
+def getKey():
+    global chatId, token, api_key, api_secret
+    with open('./key.txt', 'r') as file:
+        lines = file.readlines()
+        api_key = lines[0].strip()
+        api_secret = lines[1].strip()
+        chatId = lines[2].strip()
+        token = lines[3].strip()
+
 
 async def send_fun(text):
-    chatId = "여기에 TELEGRAM chat id 입력"
-    token = "여기에 TELEGRAM token 입력"
     bot = telegram.Bot(token=token)
     await bot.sendMessage(chat_id=chatId, text=text)
 
 
-def get_message():
-    exchange = ccxt.binance()
+def getAverageCost(symbolname):
+    trades = client.my_trades(symbolname)
+    total = 0
+    totalQty = 0
+    averageCost = 0
+    for item in trades:
+        if item["isBuyer"]:
+            total += float(item["qty"]) * float(item["price"])
+            totalQty += float(item["qty"])
+            averageCost = total / totalQty
+    return averageCost  # Return both total and averageCost
+
+
+def getSpotList():
+    ret = {}
+    data = client.user_asset()
+    for item in data:
+        name = item['asset']
+        qty = float(item['free'])
+        if float(item['free']) > 1:
+            ret[name] = qty
+    return ret
+
+
+def getMarketPrice(symbolname):
+    data = client.ticker_price(symbolname)
+    return float(data["price"])
+
+
+def main():
+    global client
+    
+    getKey()
     current_time = datetime.now()
-    formatted_time = current_time.strftime("%Y-%m-%d %H:%M:%S")
-    # 파일 읽기
-    data = pd.read_csv('assets.csv', header=0)
-    # 평균매입가 계산
-    data['평균매입가'] = data['수량'] * data['평단']
-    # 평가금액 계산
-    for index, row in data.iterrows():
-        name = f"{row['이름']}/USDT"
-        ticker = exchange.fetch_ticker(symbol=name)
-        current_price = ticker['last']
-        data.at[index, '현재가'] = ticker['last']
-        data.at[index, '평가금액'] = row['수량'] * current_price
-    # 평가금액 - 평균매입가로 손익 계산
-    data['평가손익'] = data['평가금액'] - data['평균매입가']
-    data['수익률'] = data['평가손익'] / data['평균매입가'] * 100
-    # 합계 계산하기
-    total_purchase = data['평균매입가'].sum()
-    total_balance = data['평가금액'].sum()
+    formatted_time = current_time.strftime("%Y-%m-%d %H:%M")
+
+    # get my api access
+    client = Spot(api_key, api_secret)
+
+    # dataframe process
+    df = pd.DataFrame(list(getSpotList().items()), columns=['name', 'qty'])
+    for index, row in df.iterrows():
+        name = row['name']
+        if name != 'USDT':
+            df.at[index, 'average_price'] = getAverageCost(f'{name}USDT')
+            df.at[index, 'current_price'] = getMarketPrice(f'{name}USDT')
+    df['total_cost'] = df['qty'] * df['average_price']
+    df['valuation'] = df['qty'] * df['current_price']
+    df['pnl'] = df['valuation'] - df['total_cost']
+    df['pnl_percentage'] = df['pnl'] / df['total_cost'] * 100
+    df = df.sort_values(by='pnl', ascending=False)
+
+    # calculate total
+    total_purchase = df['total_cost'].sum()
+    total_balance = df['valuation'].sum()
     pnl = total_balance - total_purchase
     pnl_percentage = pnl / total_purchase * 100
-    # 문자열 생성
+
+    # make telegram message
     output_str = f"{formatted_time}\n"
-    output_str += f"평가손익: ${round(pnl, 2)}\n"
-    output_str += f"수익률: {round(pnl_percentage, 1)}%\n"
-    output_str += "-" * 20 + "\n"
-    for index, row in data.iterrows():
-        output_str += f"{row['이름']}: ${round(row['평가손익'], 2)}, {round(row['수익률'], 1)}%\n"
-    return output_str
+    output_str += f"평가손익: ${round(pnl, 2)}({round(pnl_percentage, 1)}%)\n\n"
+
+    for index, row in df.iterrows():
+        name = row['name']
+        if name != 'USDT':
+            output_str += f"{name}: ${round(row['pnl'], 2)}({round(row['pnl_percentage'], 1)}%)\n"
+
+    asyncio.run(send_fun(output_str))
+
+
+def lambda_handler(event, context):
+    main()
+    return {
+        'status code': 200,
+    }
 
 
 if __name__ == "__main__":
-    asyncio.run(send_fun(get_message()))
+    main()
